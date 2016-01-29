@@ -9,15 +9,21 @@ Maintainer  : Umayah Abdennabi
 
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# RULES "ConduitM: liftIO x >>= f" forall m (f :: (Monad n, MonadIO n) => CounduitM i o n r).
+    liftIO m >>= f = ConduitM (PipeM (liftM (unConduitM . f) (liftIO m)))
+ #-}
 
 module Routes.FileUploadRoute (handle) where
 
   -- Haskell imports
   import qualified Control.Monad.IO.Class as CMIC
   import qualified Data.ByteString.Char8  as DBC 
+  import qualified Data.List              as DL
   import qualified Snap.Core              as SC  
   import qualified Snap.Util.FileUploads  as SUF
   import qualified System.Directory       as SD
+  import qualified System.Random          as SR
+  import qualified Text.Regex             as TR
 
   dirPrefix = "../../"
 
@@ -31,10 +37,29 @@ module Routes.FileUploadRoute (handle) where
       "text/plain"      -> "txt"
       _                 -> "other"
 
+  randomStr :: SC.MonadSnap m => Int -> m String
+  randomStr size = do
+    gen <- CMIC.liftIO $ SR.newStdGen 
+    return . take size . SR.randomRs ('a', 'z') $ gen 
+
+
+  splitOnExt :: String -> [String]
+  splitOnExt file = 
+    [filename, ext]
+    where 
+      split    = TR.splitRegex (TR.mkRegex "(\\.)") $ file 
+      filename = concat . DL.intersperse "." . init $ split
+      ext      = last split 
+      
+
   createFile :: SC.MonadSnap m => String -> String -> String -> m ()
-  createFile tempDir fileName fileType = 
+  createFile tempDir fileName fileType = do 
+    let newName' = splitOnExt fileName
+    token <- randomStr 10
+    let newName = (head newName') ++ "-" ++ token ++ "." ++ (last newName')
+    let newDir = dirPrefix ++ (ext2dir fileType) ++ "/" ++ newName
     CMIC.liftIO $ SD.copyFile tempDir newDir
-    where newDir = dirPrefix ++ (ext2dir fileType) ++ "/" ++ fileName 
+         
 
   maxMb = 1024
   mb = 2 ^ (20 :: Int)
@@ -68,7 +93,7 @@ module Routes.FileUploadRoute (handle) where
           Nothing -> "" 
       fileType = DBC.unpack . SUF.partContentType $ partInfo
 
-  uploadHandler :: SC.MonadSnap m 
+  uploadHandler :: SC.MonadSnap m
                 => [(SUF.PartInfo, Either SUF.PolicyViolationException FilePath)] 
                 -> m ()
   uploadHandler xs = case allValid of
@@ -85,7 +110,7 @@ module Routes.FileUploadRoute (handle) where
   handleFiles tempDir = do 
     SUF.handleFileUploads tempDir filePolicy perPartPolicy uploadHandler
     
-  handle :: SC.Snap ()
+  handle :: SC.MonadSnap m => m ()
   handle = do
     handleFiles $ dirPrefix ++ "tmp"
 
